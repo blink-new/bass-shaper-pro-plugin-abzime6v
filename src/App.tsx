@@ -11,11 +11,11 @@ import {
   Mic,
   Music,
   Volume2,
-  Equalizer,
   Zap,
   Settings,
   Download,
-  Upload
+  Upload,
+  Sliders
 } from 'lucide-react'
 import { Switch } from '@/components/ui/switch'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
@@ -160,7 +160,7 @@ function App() {
         >
           <div className="flex items-center justify-center gap-3 mb-4">
             <div className="p-3 bg-gradient-to-r from-purple-600 to-blue-600 rounded-xl">
-              <Equalizer className="w-8 h-8" />
+              <Sliders className="w-8 h-8" />
             </div>
             <h1 className="text-4xl font-bold bg-gradient-to-r from-purple-400 to-blue-400 bg-clip-text text-transparent">
               Bass Shaper Pro
@@ -418,7 +418,7 @@ function App() {
                     />
                     <div className="flex justify-between text-xs text-slate-500">
                       <span>-24dB</span>
-                      <span className="font-mono">{audioSettings.midFreq}%</span>
+                      <span className="font-mono font-bold text-purple-400">{audioSettings.midFreq}%</span>
                       <span>+24dB</span>
                     </div>
                   </div>
@@ -435,7 +435,7 @@ function App() {
                     />
                     <div className="flex justify-between text-xs text-slate-500">
                       <span>-24dB</span>
-                      <span className="font-mono">{audioSettings.highFreq}%</span>
+                      <span className="font-mono font-bold text-purple-400">{audioSettings.highFreq}%</span>
                       <span>+24dB</span>
                     </div>
                   </div>
