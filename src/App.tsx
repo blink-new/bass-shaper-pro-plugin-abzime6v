@@ -1,28 +1,29 @@
-import { useState, useRef, useEffect } from 'react'
+import { useState, useEffect } from 'react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Slider } from '@/components/ui/slider'
 import { Badge } from '@/components/ui/badge'
-
-import { 
-  Play, 
-  Pause, 
-  Square,
-  Mic,
-  Music,
-  Volume2,
-  Zap,
-  Settings,
-  Download,
-  Upload,
-  Sliders
-} from 'lucide-react'
 import { Switch } from '@/components/ui/switch'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Label } from '@/components/ui/label'
-import { Progress } from '@/components/ui/progress'
 import { Separator } from '@/components/ui/separator'
 import { motion } from 'framer-motion'
+import { toast } from 'react-hot-toast'
+
+import { 
+  Mic,
+  Zap,
+  Settings,
+  Sliders,
+  Waves,
+  BarChart3,
+  Headphones
+} from 'lucide-react'
+
+import { useAudioProcessor } from './components/AudioProcessor'
+import AudioControls from './components/AudioControls'
+import WaveformVisualizer from './components/WaveformVisualizer'
+import SpectrumAnalyzer from './components/SpectrumAnalyzer'
 
 interface AudioSettings {
   bassBoost: number
@@ -49,12 +50,17 @@ function App() {
     enabled: true
   })
   const [recordingTime, setRecordingTime] = useState(0)
-  const [level, setLevel] = useState(0)
   const [preset, setPreset] = useState("custom")
   const [audioFile, setAudioFile] = useState<File | null>(null)
-  
-  const intervalRef = useRef<NodeJS.Timeout>()
-  const fileInputRef = useRef<HTMLInputElement>(null)
+  const [volume, setVolume] = useState(75)
+  const [mediaRecorder, setMediaRecorder] = useState<MediaRecorder | null>(null)
+  const [recordedChunks, setRecordedChunks] = useState<Blob[]>([])
+
+  const { processor, isReady, error } = useAudioProcessor({
+    audioFile,
+    settings: audioSettings,
+    isPlaying
+  })
 
   const presets = {
     custom: audioSettings,
@@ -97,32 +103,81 @@ function App() {
       compression: 75,
       gain: 82,
       enabled: true
+    },
+    "minimal": {
+      bassBoost: 40,
+      lowFreq: 50,
+      midFreq: 60,
+      highFreq: 55,
+      saturation: 20,
+      compression: 30,
+      gain: 70,
+      enabled: true
     }
   }
 
+  // Recording functionality
   useEffect(() => {
     if (isRecording) {
-      intervalRef.current = setInterval(() => {
-        setRecordingTime(prev => prev + 1)
-        setLevel(Math.random() * 100)
-      }, 1000)
+      let interval: NodeJS.Timeout
+      
+      const startRecording = async () => {
+        try {
+          const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+          const recorder = new MediaRecorder(stream)
+          
+          recorder.ondataavailable = (event) => {
+            if (event.data.size > 0) {
+              setRecordedChunks(prev => [...prev, event.data])
+            }
+          }
+          
+          recorder.onstop = () => {
+            stream.getTracks().forEach(track => track.stop())
+          }
+          
+          recorder.start()
+          setMediaRecorder(recorder)
+          setRecordingTime(0)
+          
+          interval = setInterval(() => {
+            setRecordingTime(prev => prev + 1)
+          }, 1000)
+          
+          toast.success('Recording started')
+        } catch (error) {
+          console.error('Failed to start recording:', error)
+          toast.error('Failed to start recording. Please check microphone permissions.')
+          setIsRecording(false)
+        }
+      }
+      
+      startRecording()
+      
+      return () => {
+        if (interval) clearInterval(interval)
+      }
     } else {
-      if (intervalRef.current) {
-        clearInterval(intervalRef.current)
+      if (mediaRecorder && mediaRecorder.state === 'recording') {
+        mediaRecorder.stop()
+        setMediaRecorder(null)
+        
+        if (recordedChunks.length > 0) {
+          const blob = new Blob(recordedChunks, { type: 'audio/wav' })
+          const file = new File([blob], 'recorded_audio.wav', { type: 'audio/wav' })
+          setAudioFile(file)
+          setRecordedChunks([])
+          toast.success('Recording saved and loaded')
+        }
       }
     }
-
-    return () => {
-      if (intervalRef.current) {
-        clearInterval(intervalRef.current)
-      }
-    }
-  }, [isRecording])
+  }, [isRecording, mediaRecorder, recordedChunks])
 
   const handlePresetChange = (value: string) => {
     setPreset(value)
     if (value !== "custom") {
       setAudioSettings(presets[value as keyof typeof presets])
+      toast.success(`Applied ${value} preset`)
     }
   }
 
@@ -142,11 +197,41 @@ function App() {
     return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`
   }
 
-  const handleFileUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0]
-    if (file) {
-      setAudioFile(file)
+  const handleFileUpload = (file: File) => {
+    // Validate file type
+    const validTypes = ['audio/wav', 'audio/mp3', 'audio/mpeg', 'audio/ogg', 'audio/flac', 'audio/aac']
+    if (!validTypes.some(type => file.type.includes(type.split('/')[1]))) {
+      toast.error('Please upload a valid audio file (WAV, MP3, OGG, FLAC, AAC)')
+      return
     }
+    
+    // Validate file size (max 50MB)
+    if (file.size > 50 * 1024 * 1024) {
+      toast.error('File size must be less than 50MB')
+      return
+    }
+    
+    setAudioFile(file)
+    setIsPlaying(false)
+    toast.success('Audio file loaded successfully')
+  }
+
+  const handlePlayPause = () => {
+    if (!audioFile) {
+      toast.error('Please load an audio file first')
+      return
+    }
+    
+    if (!isReady) {
+      toast.error('Audio processor not ready. Please wait...')
+      return
+    }
+    
+    setIsPlaying(!isPlaying)
+  }
+
+  const handleStop = () => {
+    setIsPlaying(false)
   }
 
   return (
@@ -167,102 +252,88 @@ function App() {
             </h1>
           </div>
           <p className="text-slate-400 text-lg">
-            Professional bass enhancement plugin for electronic music production
+            Professional bass enhancement plugin with real-time waveform visualization
           </p>
           <div className="flex justify-center gap-2 mt-4">
             <Badge variant="secondary" className="bg-purple-600/20 text-purple-300">
-              DAW Plugin
+              <Waves className="w-3 h-3 mr-1" />
+              Real-time Processing
             </Badge>
             <Badge variant="secondary" className="bg-blue-600/20 text-blue-300">
-              Standalone
+              <BarChart3 className="w-3 h-3 mr-1" />
+              Spectrum Analysis
             </Badge>
             <Badge variant="secondary" className="bg-green-600/20 text-green-300">
+              <Mic className="w-3 h-3 mr-1" />
               Recording
             </Badge>
           </div>
         </motion.div>
 
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        {/* Waveform Visualizer */}
+        <motion.div 
+          initial={{ opacity: 0, scale: 0.95 }}
+          animate={{ opacity: 1, scale: 1 }}
+          transition={{ delay: 0.1 }}
+          className="mb-8"
+        >
+          <Card className="bg-slate-800/50 border-slate-700">
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <Waves className="w-5 h-5" />
+                Waveform Visualizer
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <WaveformVisualizer
+                audioProcessor={processor}
+                isPlaying={isPlaying}
+                audioFile={audioFile}
+                className="h-48"
+              />
+            </CardContent>
+          </Card>
+        </motion.div>
+
+        <div className="grid grid-cols-1 xl:grid-cols-4 gap-6">
           {/* Left Column - Audio Controls */}
           <motion.div 
             initial={{ opacity: 0, x: -20 }}
             animate={{ opacity: 1, x: 0 }}
-            transition={{ delay: 0.1 }}
+            transition={{ delay: 0.2 }}
             className="space-y-6"
           >
-            {/* Transport Controls */}
-            <Card className="bg-slate-800/50 border-slate-700">
-              <CardHeader>
-                <CardTitle className="flex items-center gap-2">
-                  <Music className="w-5 h-5" />
-                  Transport
-                </CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-4">
-                <div className="flex justify-center gap-4">
-                  <Button
-                    size="lg"
-                    onClick={() => setIsPlaying(!isPlaying)}
-                    className="bg-gradient-to-r from-green-600 to-emerald-600 hover:from-green-700 hover:to-emerald-700"
-                  >
-                    {isPlaying ? <Pause className="w-6 h-6" /> : <Play className="w-6 h-6" />}
-                  </Button>
-                  <Button
-                    size="lg"
-                    onClick={() => setIsPlaying(false)}
-                    variant="outline"
-                    className="border-slate-600 text-slate-300 hover:bg-slate-700"
-                  >
-                    <Square className="w-6 h-6" />
-                  </Button>
-                </div>
-                
-                <div className="space-y-2">
-                  <Label>Audio File</Label>
-                  <div className="flex gap-2">
-                    <Button
-                      variant="outline"
-                      onClick={() => fileInputRef.current?.click()}
-                      className="border-slate-600 text-slate-300 hover:bg-slate-700 flex-1"
-                    >
-                      <Upload className="w-4 h-4 mr-2" />
-                      {audioFile ? audioFile.name : "Load Audio"}
-                    </Button>
-                    <input
-                      ref={fileInputRef}
-                      type="file"
-                      accept="audio/*"
-                      onChange={handleFileUpload}
-                      className="hidden"
-                    />
-                  </div>
-                </div>
-              </CardContent>
-            </Card>
+            <AudioControls
+              audioProcessor={processor}
+              isPlaying={isPlaying}
+              onPlayPause={handlePlayPause}
+              onStop={handleStop}
+              onFileUpload={handleFileUpload}
+              audioFile={audioFile}
+              volume={volume}
+              onVolumeChange={setVolume}
+              isReady={isReady}
+              error={error}
+            />
 
             {/* Recording Controls */}
             <Card className="bg-slate-800/50 border-slate-700">
               <CardHeader>
                 <CardTitle className="flex items-center gap-2">
                   <Mic className="w-5 h-5" />
-                  Recording
+                  Live Recording
                 </CardTitle>
               </CardHeader>
               <CardContent className="space-y-4">
                 <div className="flex justify-center">
                   <Button
                     size="lg"
-                    onClick={() => {
-                      setIsRecording(!isRecording)
-                      if (!isRecording) {
-                        setRecordingTime(0)
-                      }
-                    }}
-                    className={`${
+                    onClick={() => setIsRecording(!isRecording)}
+                    className={
                       isRecording 
                         ? 'bg-gradient-to-r from-red-600 to-pink-600 hover:from-red-700 hover:to-pink-700' 
                         : 'bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-700 hover:to-blue-700'
-                    }`}
+                    }
                   >
                     <Mic className="w-6 h-6 mr-2" />
                     {isRecording ? 'Stop Recording' : 'Start Recording'}
@@ -281,49 +352,12 @@ function App() {
                         {formatTime(recordingTime)}
                       </span>
                     </div>
-                    <Progress value={level} className="h-2" />
-                    <div className="flex justify-between text-xs text-slate-500">
-                      <span>Level</span>
-                      <span>{Math.round(level)}%</span>
+                    <div className="flex items-center gap-2">
+                      <div className="w-3 h-3 bg-red-500 rounded-full animate-pulse" />
+                      <span className="text-sm text-slate-400">Recording in progress...</span>
                     </div>
                   </motion.div>
                 )}
-              </CardContent>
-            </Card>
-
-            {/* Output Controls */}
-            <Card className="bg-slate-800/50 border-slate-700">
-              <CardHeader>
-                <CardTitle className="flex items-center gap-2">
-                  <Volume2 className="w-5 h-5" />
-                  Output
-                </CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-4">
-                <div className="space-y-2">
-                  <Label>Master Gain</Label>
-                  <Slider
-                    value={[audioSettings.gain]}
-                    onValueChange={(value) => handleSettingChange('gain', value[0])}
-                    min={0}
-                    max={100}
-                    step={1}
-                    className="w-full"
-                  />
-                  <div className="flex justify-between text-xs text-slate-500">
-                    <span>0%</span>
-                    <span className="font-mono">{audioSettings.gain}%</span>
-                    <span>100%</span>
-                  </div>
-                </div>
-                
-                <Button
-                  variant="outline"
-                  className="w-full border-slate-600 text-slate-300 hover:bg-slate-700"
-                >
-                  <Download className="w-4 h-4 mr-2" />
-                  Export Audio
-                </Button>
               </CardContent>
             </Card>
           </motion.div>
@@ -332,14 +366,14 @@ function App() {
           <motion.div 
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: 0.2 }}
-            className="space-y-6"
+            transition={{ delay: 0.3 }}
+            className="xl:col-span-2 space-y-6"
           >
             <Card className="bg-slate-800/50 border-slate-700">
               <CardHeader>
                 <CardTitle className="flex items-center gap-2">
                   <Zap className="w-5 h-5" />
-                  Bass Shaper
+                  Bass Shaper Engine
                 </CardTitle>
               </CardHeader>
               <CardContent className="space-y-6">
@@ -365,78 +399,117 @@ function App() {
                       <SelectItem value="dubstep">Dubstep</SelectItem>
                       <SelectItem value="techno">Techno</SelectItem>
                       <SelectItem value="trap">Trap</SelectItem>
+                      <SelectItem value="minimal">Minimal</SelectItem>
                     </SelectContent>
                   </Select>
                 </div>
 
                 <Separator />
 
-                <div className="space-y-6">
-                  <div className="space-y-3">
-                    <Label className="text-lg font-semibold text-purple-400">Bass Boost</Label>
-                    <Slider
-                      value={[audioSettings.bassBoost]}
-                      onValueChange={(value) => handleSettingChange('bassBoost', value[0])}
-                      min={0}
-                      max={100}
-                      step={1}
-                      className="w-full"
-                    />
-                    <div className="flex justify-between text-xs text-slate-500">
-                      <span>Off</span>
-                      <span className="font-mono font-bold text-purple-400">{audioSettings.bassBoost}%</span>
-                      <span>Max</span>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                  <div className="space-y-6">
+                    <div className="space-y-3">
+                      <Label className="text-lg font-semibold text-purple-400">Bass Boost</Label>
+                      <Slider
+                        value={[audioSettings.bassBoost]}
+                        onValueChange={(value) => handleSettingChange('bassBoost', value[0])}
+                        min={0}
+                        max={100}
+                        step={1}
+                        className="w-full"
+                      />
+                      <div className="flex justify-between text-xs text-slate-500">
+                        <span>Off</span>
+                        <span className="font-mono font-bold text-purple-400">{audioSettings.bassBoost}%</span>
+                        <span>Max</span>
+                      </div>
+                    </div>
+
+                    <div className="space-y-3">
+                      <Label>Low Frequency (20-200 Hz)</Label>
+                      <Slider
+                        value={[audioSettings.lowFreq]}
+                        onValueChange={(value) => handleSettingChange('lowFreq', value[0])}
+                        min={0}
+                        max={100}
+                        step={1}
+                        className="w-full"
+                      />
+                      <div className="flex justify-between text-xs text-slate-500">
+                        <span>-24dB</span>
+                        <span className="font-mono">{audioSettings.lowFreq}%</span>
+                        <span>+24dB</span>
+                      </div>
+                    </div>
+
+                    <div className="space-y-3">
+                      <Label>Mid Frequency (200-2kHz)</Label>
+                      <Slider
+                        value={[audioSettings.midFreq]}
+                        onValueChange={(value) => handleSettingChange('midFreq', value[0])}
+                        min={0}
+                        max={100}
+                        step={1}
+                        className="w-full"
+                      />
+                      <div className="flex justify-between text-xs text-slate-500">
+                        <span>-24dB</span>
+                        <span className="font-mono">{audioSettings.midFreq}%</span>
+                        <span>+24dB</span>
+                      </div>
                     </div>
                   </div>
 
-                  <div className="space-y-3">
-                    <Label>Low Frequency (20-200 Hz)</Label>
-                    <Slider
-                      value={[audioSettings.lowFreq]}
-                      onValueChange={(value) => handleSettingChange('lowFreq', value[0])}
-                      min={0}
-                      max={100}
-                      step={1}
-                      className="w-full"
-                    />
-                    <div className="flex justify-between text-xs text-slate-500">
-                      <span>-24dB</span>
-                      <span className="font-mono">{audioSettings.lowFreq}%</span>
-                      <span>+24dB</span>
+                  <div className="space-y-6">
+                    <div className="space-y-3">
+                      <Label>High Frequency (2kHz+)</Label>
+                      <Slider
+                        value={[audioSettings.highFreq]}
+                        onValueChange={(value) => handleSettingChange('highFreq', value[0])}
+                        min={0}
+                        max={100}
+                        step={1}
+                        className="w-full"
+                      />
+                      <div className="flex justify-between text-xs text-slate-500">
+                        <span>-24dB</span>
+                        <span className="font-mono">{audioSettings.highFreq}%</span>
+                        <span>+24dB</span>
+                      </div>
                     </div>
-                  </div>
 
-                  <div className="space-y-3">
-                    <Label>Mid Frequency (200-2kHz)</Label>
-                    <Slider
-                      value={[audioSettings.midFreq]}
-                      onValueChange={(value) => handleSettingChange('midFreq', value[0])}
-                      min={0}
-                      max={100}
-                      step={1}
-                      className="w-full"
-                    />
-                    <div className="flex justify-between text-xs text-slate-500">
-                      <span>-24dB</span>
-                      <span className="font-mono font-bold text-purple-400">{audioSettings.midFreq}%</span>
-                      <span>+24dB</span>
+                    <div className="space-y-3">
+                      <Label className="text-lg font-semibold text-blue-400">Saturation</Label>
+                      <Slider
+                        value={[audioSettings.saturation]}
+                        onValueChange={(value) => handleSettingChange('saturation', value[0])}
+                        min={0}
+                        max={100}
+                        step={1}
+                        className="w-full"
+                      />
+                      <div className="flex justify-between text-xs text-slate-500">
+                        <span>Clean</span>
+                        <span className="font-mono font-bold text-blue-400">{audioSettings.saturation}%</span>
+                        <span>Heavy</span>
+                      </div>
                     </div>
-                  </div>
 
-                  <div className="space-y-3">
-                    <Label>High Frequency (2kHz+)</Label>
-                    <Slider
-                      value={[audioSettings.highFreq]}
-                      onValueChange={(value) => handleSettingChange('highFreq', value[0])}
-                      min={0}
-                      max={100}
-                      step={1}
-                      className="w-full"
-                    />
-                    <div className="flex justify-between text-xs text-slate-500">
-                      <span>-24dB</span>
-                      <span className="font-mono font-bold text-purple-400">{audioSettings.highFreq}%</span>
-                      <span>+24dB</span>
+                    <div className="space-y-3">
+                      <Label className="text-lg font-semibold text-green-400">Compression</Label>
+                      <Slider
+                        value={[audioSettings.compression]}
+                        onValueChange={(value) => handleSettingChange('compression', value[0])}
+                        min={0}
+                        max={100}
+                        step={1}
+                        className="w-full"
+                      />
+                      <div className="flex justify-between text-xs text-slate-500">
+                        <span>Off</span>
+                        <span className="font-mono font-bold text-green-400">{audioSettings.compression}%</span>
+                        <span>Max</span>
+                      </div>
                     </div>
                   </div>
                 </div>
@@ -444,82 +517,76 @@ function App() {
             </Card>
           </motion.div>
 
-          {/* Right Column - Effects */}
+          {/* Right Column - Spectrum Analyzer */}
           <motion.div 
             initial={{ opacity: 0, x: 20 }}
             animate={{ opacity: 1, x: 0 }}
-            transition={{ delay: 0.3 }}
+            transition={{ delay: 0.4 }}
             className="space-y-6"
           >
             <Card className="bg-slate-800/50 border-slate-700">
               <CardHeader>
                 <CardTitle className="flex items-center gap-2">
-                  <Settings className="w-5 h-5" />
-                  Effects
+                  <BarChart3 className="w-5 h-5" />
+                  Spectrum Analyzer
                 </CardTitle>
               </CardHeader>
-              <CardContent className="space-y-6">
-                <div className="space-y-3">
-                  <Label className="text-lg font-semibold text-blue-400">Saturation</Label>
-                  <Slider
-                    value={[audioSettings.saturation]}
-                    onValueChange={(value) => handleSettingChange('saturation', value[0])}
-                    min={0}
-                    max={100}
-                    step={1}
-                    className="w-full"
-                  />
-                  <div className="flex justify-between text-xs text-slate-500">
-                    <span>Clean</span>
-                    <span className="font-mono font-bold text-blue-400">{audioSettings.saturation}%</span>
-                    <span>Heavy</span>
-                  </div>
-                </div>
-
-                <div className="space-y-3">
-                  <Label className="text-lg font-semibold text-green-400">Compression</Label>
-                  <Slider
-                    value={[audioSettings.compression]}
-                    onValueChange={(value) => handleSettingChange('compression', value[0])}
-                    min={0}
-                    max={100}
-                    step={1}
-                    className="w-full"
-                  />
-                  <div className="flex justify-between text-xs text-slate-500">
-                    <span>Off</span>
-                    <span className="font-mono font-bold text-green-400">{audioSettings.compression}%</span>
-                    <span>Max</span>
-                  </div>
-                </div>
+              <CardContent>
+                <SpectrumAnalyzer
+                  audioProcessor={processor}
+                  isPlaying={isPlaying}
+                  className="h-40"
+                />
               </CardContent>
             </Card>
 
-            {/* Spectrum Analyzer Placeholder */}
+            {/* Settings Panel */}
             <Card className="bg-slate-800/50 border-slate-700">
               <CardHeader>
-                <CardTitle>Spectrum Analyzer</CardTitle>
+                <CardTitle className="flex items-center gap-2">
+                  <Settings className="w-5 h-5" />
+                  Advanced Settings
+                </CardTitle>
               </CardHeader>
-              <CardContent>
-                <div className="h-40 bg-slate-900/50 rounded-lg flex items-end justify-center gap-1 p-4">
-                  {Array.from({ length: 32 }, (_, i) => (
-                    <motion.div
-                      key={i}
-                      className="bg-gradient-to-t from-purple-600 to-blue-400 rounded-t-sm flex-1"
-                      style={{
-                        height: `${Math.random() * 100}%`,
-                        minHeight: '2px'
-                      }}
-                      animate={{
-                        height: `${Math.random() * 100}%`
-                      }}
-                      transition={{
-                        repeat: Infinity,
-                        duration: 0.5,
-                        delay: i * 0.05
-                      }}
-                    />
-                  ))}
+              <CardContent className="space-y-4">
+                <div className="space-y-2">
+                  <Label>Master Output</Label>
+                  <Slider
+                    value={[audioSettings.gain]}
+                    onValueChange={(value) => handleSettingChange('gain', value[0])}
+                    min={0}
+                    max={100}
+                    step={1}
+                    className="w-full"
+                  />
+                  <div className="flex justify-between text-xs text-slate-500">
+                    <span>0%</span>
+                    <span className="font-mono">{audioSettings.gain}%</span>
+                    <span>100%</span>
+                  </div>
+                </div>
+
+                <Separator />
+
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm">Processing Status</span>
+                    <Badge variant={isReady ? "default" : "secondary"}>
+                      {isReady ? "Ready" : "Loading"}
+                    </Badge>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm">Audio Quality</span>
+                    <Badge variant="default" className="bg-green-600">
+                      HD
+                    </Badge>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm">Latency</span>
+                    <Badge variant="secondary">
+                      Low
+                    </Badge>
+                  </div>
                 </div>
               </CardContent>
             </Card>
@@ -528,14 +595,17 @@ function App() {
             <Card className="bg-gradient-to-r from-purple-600/20 to-blue-600/20 border-purple-500/50">
               <CardContent className="p-4">
                 <div className="text-center space-y-2">
-                  <h3 className="font-bold text-purple-300">Pro Features</h3>
+                  <div className="flex justify-center">
+                    <Headphones className="w-8 h-8 text-purple-300" />
+                  </div>
+                  <h3 className="font-bold text-purple-300">Pro Audio Engine</h3>
                   <p className="text-sm text-slate-300">
-                    Advanced bass processing algorithms designed for electronic music production
+                    Real-time bass processing with advanced algorithms for professional electronic music production
                   </p>
                   <div className="flex justify-center gap-4 text-xs text-slate-400">
-                    <span>• Real-time processing</span>
-                    <span>• VST/AU support</span>
-                    <span>• MIDI control</span>
+                    <span>• 32-bit processing</span>
+                    <span>• Zero latency</span>
+                    <span>• VST compatible</span>
                   </div>
                 </div>
               </CardContent>
